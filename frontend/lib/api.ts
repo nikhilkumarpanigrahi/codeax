@@ -33,12 +33,13 @@ export type ChatRequest = {
   message: string;
   owner?: string;
   repo?: string;
+  conversation?: Array<{ role: "user" | "assistant"; content: string }>;
 };
 
 export type ChatResponse = {
   answer: string;
   suggestions: string[];
-  context: Record<string, string | number | null>;
+  context: Record<string, string | number | boolean | null>;
 };
 
 export async function fetchJson<T>(path: string): Promise<T> {

@@ -24,6 +24,7 @@ export default function ChatbotPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [lastSuggestions, setLastSuggestions] = useState<string[]>([]);
+  const [isGrokMode, setIsGrokMode] = useState(false);
 
   const canSend = useMemo(() => input.trim().length > 0 && !loading, [input, loading]);
 
@@ -37,14 +38,18 @@ export default function ChatbotPage() {
     setInput("");
 
     try {
-      const response = await postJson<ChatResponse, { message: string; owner: string; repo: string }>("/api/chat/", {
+      const history = messages.slice(-12).map((item) => ({ role: item.role, content: item.text }));
+
+      const response = await postJson<ChatResponse, { message: string; owner: string; repo: string; conversation: Array<{ role: "user" | "assistant"; content: string }> }>("/api/chat/", {
         message: trimmed,
         owner: DEFAULT_OWNER,
         repo: DEFAULT_REPO,
+        conversation: history,
       });
 
       setMessages((prev) => [...prev, { role: "assistant", text: response.answer }]);
       setLastSuggestions(response.suggestions || []);
+      setIsGrokMode(Boolean(response.context?.using_grok));
     } catch {
       setMessages((prev) => [
         ...prev,
@@ -68,6 +73,7 @@ export default function ChatbotPage() {
     <div className="space-y-4">
       <SectionCard title="RepoGuardian Chatbot">
         <p className="text-sm text-gh-text">Repository context: {DEFAULT_OWNER}/{DEFAULT_REPO}</p>
+        <p className="mt-1 text-xs text-gh-text/80">Mode: {isGrokMode ? "Grok LLM" : "Rule-based fallback"}</p>
       </SectionCard>
 
       <SectionCard title="Conversation">

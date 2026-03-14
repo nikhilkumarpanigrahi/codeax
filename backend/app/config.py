@@ -18,5 +18,12 @@ class Settings(BaseSettings):
 
     enable_auto_pr_comment: bool = True
 
+    chatbot_enable_llm: bool = True
+    grok_api_key: str = ""
+    grok_base_url: str = "https://api.x.ai/v1"
+    grok_model: str = "grok-2-latest"
+    chatbot_temperature: float = 0.3
+    chatbot_max_tokens: int = 800
+
 
 settings = Settings()

@@ -16,4 +16,4 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     suggestions: list[str] = Field(default_factory=list)
-    context: dict[str, str | int | float | None] = Field(default_factory=dict)
+    context: dict[str, str | int | float | bool | None] = Field(default_factory=dict)

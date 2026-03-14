@@ -13,4 +13,5 @@ async def chat(payload: ChatRequest) -> ChatResponse:
         message=payload.message,
         owner=payload.owner,
         repo=payload.repo,
+        conversation=payload.conversation,
     )

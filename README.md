@@ -41,6 +41,15 @@ RepoGuardian AI is a full-stack baseline for autonomous PR analysis workflows:
 - Backend: http://localhost:8000
 - API docs: http://localhost:8000/docs
 
+## Chatbot LLM (Grok)
+Set these values in `.env` to enable Grok-powered responses:
+- `CHATBOT_ENABLE_LLM=true`
+- `GROK_API_KEY=<your_key>`
+- `GROK_BASE_URL=https://api.x.ai/v1`
+- `GROK_MODEL=grok-2-latest`
+
+If no valid Grok key is present, chatbot automatically uses the built-in repository-aware fallback logic.
+
 ## Implemented Backend Routes
 - `GET /`
 - `GET /health`
