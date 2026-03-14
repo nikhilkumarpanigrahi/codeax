@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -16,3 +18,36 @@ class RepositoryModel(BaseModel):
     stars: int = 0
     language: str | None = None
     health: RepositoryHealth
+
+
+class RepositoryBase(BaseModel):
+    """
+    Base schema for repositories stored in MongoDB.
+
+    Field names follow the requirement exactly so the API contract
+    matches the requested shape.
+    """
+
+    repoName: str
+    ownerName: str
+    description: str
+    githubLink: str
+    vulnerabilitiesDetected: int = Field(ge=0)
+    lastScanDate: datetime
+
+
+class RepositoryCreate(RepositoryBase):
+    """
+    Schema used when creating a new repository.
+    """
+
+
+class RepositoryInDB(RepositoryBase):
+    """
+    Schema representing a repository document as returned by the API.
+
+    The MongoDB ObjectId is exposed as a string `id` field so that
+    clients do not need to deal with ObjectId types directly.
+    """
+
+    id: str = Field(..., description="MongoDB document identifier")
