@@ -17,6 +17,6 @@ async def get_repository_insights(owner: str, repo: str) -> RepositoryInsight:
 
 
 @router.get("/{owner}/{repo}/health-history")
-async def get_repository_health_history(owner: str, repo: str) -> dict[str, list[dict[str, object]]]:
+async def get_repository_health_history(owner: str, repo: str) -> dict[str, object]:
     insight = await AnalysisService().get_repository_insights(owner, repo)
     return {"repository": f"{owner}/{repo}", "history": [item.model_dump(mode="json") for item in insight.health_history]}

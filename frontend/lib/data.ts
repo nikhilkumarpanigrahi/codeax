@@ -20,7 +20,7 @@ export const dashboardMetrics: Metric[] = [
 ];
 
 export const repositories: RepoSummary[] = [
-  { fullName: "octo-org/repoguardian-ai", language: "TypeScript", stars: 314, health: 83 },
+  { fullName: "octo-org/codeax-ai", language: "TypeScript", stars: 314, health: 83 },
   { fullName: "octo-org/platform-api", language: "Python", stars: 198, health: 78 },
   { fullName: "octo-org/workflows", language: "YAML", stars: 92, health: 81 }
 ];

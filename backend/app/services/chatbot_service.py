@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -15,34 +16,83 @@ class ChatbotService:
         self.analysis_service = analysis_service or AnalysisService()
         self.github_service = github_service or GitHubService()
 
+    def _is_placeholder(self, value: str) -> bool:
+        placeholder_prefixes = ("replace_with_", "your_", "example")
+        return value.lower().startswith(placeholder_prefixes)
+
+    def _valid_groq_key(self) -> str:
+        key = (settings.groq_api_key or "").strip()
+        if not key:
+            return ""
+        if self._is_placeholder(key):
+            return ""
+        return key
+
     def _valid_grok_key(self) -> str:
         key = (settings.grok_api_key or "").strip()
         if not key:
             return ""
-        placeholder_prefixes = ("replace_with_", "your_", "example")
-        if key.lower().startswith(placeholder_prefixes):
+        if self._is_placeholder(key):
             return ""
         return key
 
-    async def _call_grok(
+    def _sanitize_conversation(self, conversation: list[ChatMessage]) -> list[ChatMessage]:
+        max_items = max(1, settings.chatbot_max_history_messages)
+        cleaned: list[ChatMessage] = []
+        for item in conversation[-max_items:]:
+            content = (item.content or "").strip()
+            if not content:
+                continue
+            if len(content) > 2000:
+                content = content[:2000]
+            cleaned.append(ChatMessage(role=item.role, content=content))
+        return cleaned
+
+    async def _call_llm(
         self,
         user_message: str,
         conversation: list[ChatMessage],
         repository: str,
         context: dict[str, str | int | float | bool | None],
-    ) -> str | None:
+    ) -> tuple[str | None, str | None, str | None]:
         if not settings.chatbot_enable_llm:
-            return None
+            return None, None, None
 
-        api_key = self._valid_grok_key()
-        if not api_key:
-            return None
+        provider = settings.llm_provider.strip().lower()
+        groq_key = self._valid_groq_key()
+        grok_key = self._valid_grok_key()
+
+        if provider == "grok" and grok_key:
+            api_key = grok_key
+            base_url = settings.grok_base_url
+            model = settings.grok_model
+            provider_name = "grok"
+        elif provider == "groq" and groq_key:
+            api_key = groq_key
+            base_url = settings.groq_base_url
+            model = settings.groq_model
+            provider_name = "groq"
+        elif groq_key:
+            api_key = groq_key
+            base_url = settings.groq_base_url
+            model = settings.groq_model
+            provider_name = "groq"
+        elif grok_key:
+            api_key = grok_key
+            base_url = settings.grok_base_url
+            model = settings.grok_model
+            provider_name = "grok"
+        else:
+            return None, None, None
 
         system_prompt = (
-            "You are RepoGuardian AI Assistant, a ChatGPT-style helpful assistant. "
+            settings.chatbot_system_prompt.strip()
+            or (
+            "You are Codeax AI Assistant, a ChatGPT-style helpful assistant. "
             "You help across software engineering, debugging, architecture, documentation, DevOps, and security. "
             "When repository context is available, use it. If user asks unrelated topics, still answer helpfully. "
             "Be concise and actionable. If uncertain, state assumptions."
+            )
         )
 
         context_text = (
@@ -56,12 +106,12 @@ class ChatbotService:
             {"role": "system", "content": context_text},
         ]
 
-        for item in conversation[-12:]:
+        for item in self._sanitize_conversation(conversation):
             messages.append({"role": item.role, "content": item.content})
         messages.append({"role": "user", "content": user_message})
 
         payload: dict[str, Any] = {
-            "model": settings.grok_model,
+            "model": model,
             "messages": messages,
             "temperature": settings.chatbot_temperature,
             "max_tokens": settings.chatbot_max_tokens,
@@ -71,18 +121,37 @@ class ChatbotService:
             "Content-Type": "application/json",
         }
 
-        url = f"{settings.grok_base_url.rstrip('/')}/chat/completions"
-        async with httpx.AsyncClient(timeout=40) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            body = response.json()
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        timeout = max(5, settings.grok_timeout_seconds)
+        retries = max(0, settings.grok_retry_attempts)
+        backoff = max(0.1, settings.grok_retry_backoff_seconds)
+
+        last_error: Exception | None = None
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for attempt in range(retries + 1):
+                try:
+                    response = await client.post(url, json=payload, headers=headers)
+                    if response.status_code in [429, 500, 502, 503, 504] and attempt < retries:
+                        await asyncio.sleep(backoff * (2**attempt))
+                        continue
+                    response.raise_for_status()
+                    body = response.json()
+                    break
+                except (httpx.TimeoutException, httpx.HTTPError) as exc:
+                    last_error = exc
+                    if attempt < retries:
+                        await asyncio.sleep(backoff * (2**attempt))
+                        continue
+                    raise
+        if last_error is not None:
+            return None, provider_name, model
 
         choices = body.get("choices", [])
         if not choices:
-            return None
+            return None, provider_name, model
 
         content = choices[0].get("message", {}).get("content", "")
-        return content.strip() or None
+        return content.strip() or None, provider_name, model
 
     async def respond(
         self,
@@ -131,23 +200,38 @@ class ChatbotService:
             "code_smells": insights.code_smells,
             "test_coverage": insights.test_coverage,
             "llm_enabled": settings.chatbot_enable_llm,
+            "using_groq": bool(self._valid_groq_key() and settings.chatbot_enable_llm),
             "using_grok": bool(self._valid_grok_key() and settings.chatbot_enable_llm),
+            "llm_provider": None,
+            "llm_model": None,
+            "llm_fallback_reason": None,
         }
 
-        grok_answer: str | None = None
+        llm_answer: str | None = None
+        llm_provider: str | None = None
+        llm_model: str | None = None
         try:
-            grok_answer = await self._call_grok(
+            llm_answer, llm_provider, llm_model = await self._call_llm(
                 user_message=message,
                 conversation=conversation,
                 repository=repository,
                 context=context,
             )
         except Exception:
-            grok_answer = None
+            llm_answer = None
+            context["llm_fallback_reason"] = "llm_request_failed"
 
-        if grok_answer:
+        context["llm_provider"] = llm_provider
+        context["llm_model"] = llm_model
+
+        if not self._valid_groq_key() and not self._valid_grok_key() and settings.chatbot_enable_llm:
+            context["llm_fallback_reason"] = "missing_llm_api_key"
+        if not settings.chatbot_enable_llm:
+            context["llm_fallback_reason"] = "llm_disabled"
+
+        if llm_answer:
             return ChatResponse(
-                answer=grok_answer,
+                answer=llm_answer,
                 suggestions=[
                     "Review my architecture for scalability",
                     "Help me debug a failing API endpoint",

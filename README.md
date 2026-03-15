@@ -1,6 +1,6 @@
-# RepoGuardian AI
+# Codeax AI
 
-RepoGuardian AI is a full-stack baseline for autonomous PR analysis workflows:
+Codeax AI is a full-stack baseline for autonomous PR analysis workflows:
 - Frontend: Next.js 14 + TypeScript + Tailwind dashboard and landing page
 - Backend: FastAPI with structured routers, models, and service layer
 - Infra: Docker Compose and VS Code task support
@@ -41,14 +41,58 @@ RepoGuardian AI is a full-stack baseline for autonomous PR analysis workflows:
 - Backend: http://localhost:8000
 - API docs: http://localhost:8000/docs
 
-## Chatbot LLM (Grok)
-Set these values in `.env` to enable Grok-powered responses:
+## Authentication (Login + Signup)
+The dashboard now requires authentication and supports:
+- Credentials login (`CODEAX_AUTH_USERNAME` / `CODEAX_AUTH_PASSWORD`)
+- Google OAuth signup/login
+- GitHub OAuth signup/login
+
+Set these values in `.env`:
+- `NEXTAUTH_URL=http://localhost:3000`
+- `NEXTAUTH_SECRET=<long_random_secret>`
+- `GITHUB_CLIENT_ID=<oauth_client_id>`
+- `GITHUB_CLIENT_SECRET=<oauth_client_secret>`
+- `GOOGLE_CLIENT_ID=<oauth_client_id>`
+- `GOOGLE_CLIENT_SECRET=<oauth_client_secret>`
+
+Routes:
+- `/login`
+- `/signup`
+
+## Chatbot LLM (Groq Llama Recommended)
+Set these values in `.env` to enable Groq Llama responses:
 - `CHATBOT_ENABLE_LLM=true`
-- `GROK_API_KEY=<your_key>`
+- `LLM_PROVIDER=groq`
+- `GROQ_API_KEY=<your_key>`
+- `GROQ_BASE_URL=https://api.groq.com/openai/v1`
+- `GROQ_MODEL=llama-3.3-70b-versatile`
+- `GROK_TIMEOUT_SECONDS=40`
+- `GROK_RETRY_ATTEMPTS=2`
+- `GROK_RETRY_BACKOFF_SECONDS=0.8`
+- `CHATBOT_MAX_HISTORY_MESSAGES=12`
+- `CHATBOT_SYSTEM_PROMPT=` (optional custom instruction)
+
+Optional xAI fallback values:
+- `GROK_API_KEY=<your_xai_key>`
 - `GROK_BASE_URL=https://api.x.ai/v1`
 - `GROK_MODEL=grok-2-latest`
 
-If no valid Grok key is present, chatbot automatically uses the built-in repository-aware fallback logic.
+If no valid LLM key is present, chatbot automatically uses the built-in repository-aware fallback logic.
+
+## Dashboard Login
+Dashboard routes are protected and require sign-in:
+- Login page: `/login`
+- Default credentials (override in `.env`):
+	- `CODEAX_AUTH_USERNAME=admin`
+	- `CODEAX_AUTH_PASSWORD=codeax123`
+
+### Getting a Groq API Key
+1. Sign in at Groq Console.
+2. Open API Keys and create a new key.
+3. Paste the key into `.env` as `GROQ_API_KEY`.
+4. Restart backend after saving `.env`.
+
+Free keys are not guaranteed permanently; availability depends on provider trial or credits policy.
 
 ## Implemented Backend Routes
 - `GET /`
@@ -57,14 +101,21 @@ If no valid Grok key is present, chatbot automatically uses the built-in reposit
 - `GET /api/repositories/{owner}/{repo}/insights`
 - `GET /api/repositories/{owner}/{repo}/health-history`
 - `GET /api/pull-requests/{owner}/{repo}`
-- `POST /api/analysis/{owner}/{repo}/{pr_number}`
-- `GET /api/analysis/{owner}/{repo}/{pr_number}`
+- `GET /api/analysis/{owner}/{repo}/summary`
+- `GET /api/analysis/{owner}/{repo}/security`
+- `GET /api/analysis/{owner}/{repo}/tests`
+- `POST /api/analysis/{owner}/{repo}/pr/{pr_number}`
+- `GET /api/analysis/{owner}/{repo}/pr/{pr_number}`
+- `POST /api/analysis/{owner}/{repo}/{pr_number}` (legacy compatibility)
+- `GET /api/analysis/{owner}/{repo}/{pr_number}` (legacy compatibility)
 - `GET /api/analysis/{owner}/{repo}`
 - `POST /api/chat/`
 - `POST /api/webhooks/github`
 
 ## Implemented Frontend Routes
 - `/`
+- `/login`
+- `/signup`
 - `/dashboard`
 - `/dashboard/repositories`
 - `/dashboard/pull-requests`

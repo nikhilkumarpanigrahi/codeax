@@ -1,4 +1,24 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const REQUEST_TIMEOUT_MS = 8000;
+
+async function fetchWithTimeout(input: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 export type ApiIssue = {
   severity: string;
@@ -43,7 +63,7 @@ export type ChatResponse = {
 };
 
 export async function fetchJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+  const response = await fetchWithTimeout(`${API_BASE}${path}`, { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
   }
@@ -51,7 +71,7 @@ export async function fetchJson<T>(path: string): Promise<T> {
 }
 
 export async function postJson<TResponse, TBody>(path: string, body: TBody): Promise<TResponse> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetchWithTimeout(`${API_BASE}${path}`, {
     method: "POST",
     cache: "no-store",
     headers: {

@@ -14,6 +14,10 @@ from app.services.agent_engine import PullRequestContext
 from app.models import PullRequestModel, RepositoryHealth, RepositoryModel
 
 
+_INSTALLATION_ID_CACHE: dict[str, int] = {}
+_INSTALLATION_TOKEN_CACHE: dict[int, tuple[str, int]] = {}
+
+
 class GitHubService:
     """GitHub API service with token or GitHub App authentication."""
 
@@ -44,17 +48,57 @@ class GitHubService:
     async def _get_repository_token(self, owner: str, repo: str) -> str:
         return await self._get_installation_token(owner, repo)
 
+    def _load_private_key(self) -> str:
+        inline_key = (settings.github_private_key or "").strip()
+        if inline_key:
+            return inline_key.replace("\\n", "\n")
+
+        if settings.github_private_key_path:
+            try:
+                with open(settings.github_private_key_path, "r", encoding="utf-8") as key_file:
+                    return key_file.read()
+            except Exception:
+                return ""
+        return ""
+
     async def _get_app_jwt(self) -> str:
-        if not settings.github_private_key_path or not settings.github_app_id:
+        private_key = self._load_private_key()
+        if not private_key or not settings.github_app_id:
             return ""
-        with open(settings.github_private_key_path, "r") as key_file:
-            private_key = key_file.read()
         payload = {
             "iat": int(time.time()),
             "exp": int(time.time()) + (10 * 60),
             "iss": settings.github_app_id,
         }
         return jwt.encode(payload, private_key, algorithm="RS256")
+
+    async def _resolve_installation_id(self, owner: str, repo: str, headers: dict[str, str]) -> int | None:
+        cache_key = f"{owner}/{repo}".lower()
+        if cache_key in _INSTALLATION_ID_CACHE:
+            return _INSTALLATION_ID_CACHE[cache_key]
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{settings.github_api_base_url}/repos/{owner}/{repo}/installation",
+                headers=headers,
+            )
+            if resp.status_code != 200:
+                return None
+            installation_id = int(resp.json().get("id") or 0)
+            if installation_id > 0:
+                _INSTALLATION_ID_CACHE[cache_key] = installation_id
+                return installation_id
+        return None
+
+    def _get_cached_installation_token(self, installation_id: int) -> str:
+        token_payload = _INSTALLATION_TOKEN_CACHE.get(installation_id)
+        if not token_payload:
+            return ""
+        token, expires_at_epoch = token_payload
+        # Refresh token before expiry to avoid race under concurrent requests.
+        if time.time() >= expires_at_epoch - max(1, settings.github_installation_token_ttl_buffer_seconds):
+            return ""
+        return token
 
     async def _get_installation_token(self, owner: str, repo: str) -> str:
         static_token = self._get_static_token()
@@ -69,26 +113,33 @@ class GitHubService:
             "Authorization": f"Bearer {app_jwt}",
             "Accept": "application/vnd.github.v3+json"
         }
-        
+
+        installation_id = await self._resolve_installation_id(owner, repo, headers)
+        if not installation_id:
+            return ""
+
+        cached_token = self._get_cached_installation_token(installation_id)
+        if cached_token:
+            return cached_token
+
         async with httpx.AsyncClient(timeout=15) as client:
-            # First get the installation ID for the repo
-            resp = await client.get(
-                f"{settings.github_api_base_url}/repos/{owner}/{repo}/installation",
-                headers=headers
-            )
-            if resp.status_code != 200:
-                print(f"Could not get installation for {owner}/{repo}: {resp.text}")
-                return ""
-                
-            installation_id = resp.json().get("id")
-            
-            # Now get the token for that installation
             token_resp = await client.post(
                 f"{settings.github_api_base_url}/app/installations/{installation_id}/access_tokens",
                 headers=headers
             )
             token_resp.raise_for_status()
-            return token_resp.json().get("token", "")
+            payload = token_resp.json()
+            token = payload.get("token", "")
+            expires_at = payload.get("expires_at", "")
+            expires_at_epoch = int(time.time()) + 300
+            if expires_at:
+                try:
+                    expires_at_epoch = int(datetime.fromisoformat(expires_at.replace("Z", "+00:00")).timestamp())
+                except Exception:
+                    expires_at_epoch = int(time.time()) + 300
+            if token:
+                _INSTALLATION_TOKEN_CACHE[installation_id] = (token, expires_at_epoch)
+            return token
 
     async def _get_pull_request_files(self, owner: str, repo: str, pr_number: int, token: str = "") -> list[dict[str, str]]:
         headers = self._build_headers(token)
@@ -172,6 +223,39 @@ class GitHubService:
             deletions=pr.get("deletions", 0),
         )
 
+    async def build_context_from_pull_request(self, owner: str, repo: str, pr_number: int) -> PullRequestContext:
+        token = await self._get_repository_token(owner, repo)
+        headers = self._build_headers(token)
+        pr_url = f"{settings.github_api_base_url}/repos/{owner}/{repo}/pulls/{pr_number}"
+
+        payload = await self._request_json("GET", pr_url, headers)
+        changed_files = await self._get_pull_request_files(owner, repo, pr_number, token)
+        repository_name = f"{owner}/{repo}"
+
+        snapshot = {
+            "number": pr_number,
+            "repository": repository_name,
+            "title": payload.get("title", ""),
+            "author": payload.get("user", {}).get("login", "unknown"),
+            "status": "merged" if payload.get("merged_at") else payload.get("state", "open"),
+            "additions": payload.get("additions", 0),
+            "deletions": payload.get("deletions", 0),
+            "files_changed": payload.get("changed_files", len(changed_files)),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        await save_pull_request_snapshot(repository_name, pr_number, snapshot)
+
+        return PullRequestContext(
+            repository=repository_name,
+            number=pr_number,
+            title=payload.get("title", ""),
+            body=payload.get("body", ""),
+            author=payload.get("user", {}).get("login", "unknown"),
+            changed_files=changed_files,
+            additions=payload.get("additions", 0),
+            deletions=payload.get("deletions", 0),
+        )
+
     async def post_pull_request_comment(self, repository: str, pr_number: int, comment_body: str) -> bool:
         if not repository or "/" not in repository:
             return False
@@ -200,8 +284,8 @@ class GitHubService:
             return [
                 RepositoryModel(
                     owner="octo-org",
-                    name="repoguardian-ai",
-                    full_name="octo-org/repoguardian-ai",
+                    name="codeax-ai",
+                    full_name="octo-org/codeax-ai",
                     description="AI review and security assistant",
                     stars=314,
                     language="TypeScript",
@@ -227,12 +311,7 @@ class GitHubService:
                     if not owner or not name:
                         continue
 
-                    health_score = 65
-                    open_issues = int(item.get("open_issues_count") or 0)
-                    if open_issues < 5:
-                        health_score = 85
-                    elif open_issues < 20:
-                        health_score = 75
+                    health = self._derive_repository_health(item)
 
                     repos.append(
                         RepositoryModel(
@@ -242,12 +321,7 @@ class GitHubService:
                             description=item.get("description"),
                             stars=int(item.get("stargazers_count") or 0),
                             language=item.get("language") or "Unknown",
-                            health=RepositoryHealth(
-                                code_quality=health_score,
-                                security=min(95, health_score + 5),
-                                tests=max(50, health_score - 5),
-                                overall=health_score,
-                            ),
+                            health=health,
                         )
                     )
 
@@ -258,8 +332,8 @@ class GitHubService:
             return [
                 RepositoryModel(
                     owner="octo-org",
-                    name="repoguardian-ai",
-                    full_name="octo-org/repoguardian-ai",
+                    name="codeax-ai",
+                    full_name="octo-org/codeax-ai",
                     description="AI review and security assistant",
                     stars=314,
                     language="TypeScript",
@@ -268,6 +342,55 @@ class GitHubService:
             ]
 
         return repos
+
+    def _derive_repository_health(self, item: dict[str, Any]) -> RepositoryHealth:
+        # Heuristic scoring so repositories don't all collapse to the same value.
+        stars = int(item.get("stargazers_count") or 0)
+        open_issues = int(item.get("open_issues_count") or 0)
+        language = (item.get("language") or "").strip()
+        is_archived = bool(item.get("archived"))
+
+        pushed_at_raw = item.get("pushed_at") or item.get("updated_at")
+        days_since_push = 365
+        if pushed_at_raw:
+            try:
+                pushed_at = datetime.fromisoformat(str(pushed_at_raw).replace("Z", "+00:00"))
+                days_since_push = max(0, (datetime.now(pushed_at.tzinfo) - pushed_at).days)
+            except Exception:
+                days_since_push = 365
+
+        overall = 82
+        overall -= min(32, open_issues * 2)
+        overall += min(8, stars // 40)
+
+        if days_since_push <= 7:
+            overall += 7
+        elif days_since_push <= 30:
+            overall += 4
+        elif days_since_push <= 90:
+            overall += 1
+        elif days_since_push > 180:
+            overall -= 4
+
+        if language:
+            overall += 2
+        else:
+            overall -= 2
+
+        if is_archived:
+            overall -= 18
+
+        overall = max(45, min(96, overall))
+        code_quality = max(40, min(98, overall - 2 + (1 if language else -1)))
+        security = max(42, min(99, overall + 3 - min(6, open_issues // 4)))
+        tests = max(35, min(95, overall - 4 + (4 if stars > 100 else 0)))
+
+        return RepositoryHealth(
+            code_quality=code_quality,
+            security=security,
+            tests=tests,
+            overall=overall,
+        )
 
     async def list_pull_requests(self, owner: str, repo: str) -> list[PullRequestModel]:
         token = await self._get_repository_token(owner, repo)

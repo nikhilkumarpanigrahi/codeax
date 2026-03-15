@@ -6,7 +6,7 @@ router = APIRouter()
 @router.get("/")
 async def root() -> dict[str, str]:
     return {
-        "message": "RepoGuardian AI Backend",
+        "message": "Codeax AI Backend",
         "description": "AI coordinator driven PR analysis with security and test generation",
         "docs": "/docs",
         "openapi": "/openapi.json",

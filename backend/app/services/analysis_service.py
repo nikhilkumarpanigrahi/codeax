@@ -7,6 +7,7 @@ from app.database.state import (
     list_repository_reports,
     save_analysis_report,
 )
+from app.errors import AppError
 from app.models import AnalysisResult, HealthSnapshot, RepositoryInsight
 from app.services.coordinator_agent import CoordinatorAgent
 from app.services.agent_engine import PullRequestContext
@@ -18,18 +19,25 @@ class AnalysisService:
 
     async def run_pull_request_analysis(self, context: PullRequestContext) -> AnalysisResult:
         result = await self.coordinator.analyze(context)
-        await save_analysis_report(result.repository, result.pr_number, result.model_dump(mode="json"))
-        await append_health_history(
-            result.repository,
-            {
-                "timestamp": datetime.utcnow().isoformat(),
-                "code_quality": result.health.code_quality,
-                "security": result.health.security,
-                "tests": result.health.tests,
-                "technical_debt": result.health.technical_debt,
-                "overall": result.health.overall,
-            },
-        )
+        try:
+            await save_analysis_report(result.repository, result.pr_number, result.model_dump(mode="json"))
+            await append_health_history(
+                result.repository,
+                {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "code_quality": result.health.code_quality,
+                    "security": result.health.security,
+                    "tests": result.health.tests,
+                    "technical_debt": result.health.technical_debt,
+                    "overall": result.health.overall,
+                },
+            )
+        except Exception as exc:
+            raise AppError(
+                code="analysis_persistence_failed",
+                message=f"Failed to persist analysis artifacts: {exc}",
+                status_code=500,
+            )
         return result
 
     async def get_pull_request_analysis(self, owner: str, repo: str, pr_number: int) -> AnalysisResult | None:

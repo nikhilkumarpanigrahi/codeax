@@ -4,18 +4,18 @@ services:
   backend:
     build:
       context: ./backend
-    container_name: repoguardian-backend
+    container_name: codeax-backend
     ports:
       - "8000:8000"
     environment:
-      - MONGODB_URI=${MONGODB_URI:-mongodb://localhost:27017/repoguardian}
+      - MONGODB_URI=${MONGODB_URI:-mongodb://localhost:27017/codeax}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:
     build:
       context: ./frontend
-    container_name: repoguardian-frontend
+    container_name: codeax-frontend
     ports:
       - "3000:3000"
     environment:
